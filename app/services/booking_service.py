@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from fastapi import HTTPException
 from sqlalchemy.exc import OperationalError
-
+from app.tasks.seat_tasks import release_unpaid_seat
 from app.models.domain import Seat, SeatStatus
+from app.models.domain import Booking, BookingStatus
 
 async def reserve_seat_with_preferences(
     db: AsyncSession, 
@@ -76,5 +77,53 @@ async def reserve_seat_with_preferences(
     # Commit changes to the database
     await db.commit()
     await db.refresh(seat_to_reserve)
+    
+    # Commit changes to the database
+    await db.commit()
+    await db.refresh(seat_to_reserve)
+    
+    # NEW CODE: Trigger the background task!
+    # apply_async tells Celery to run this in the background.
+    # countdown=60 means "Wait 60 seconds before running this" 
+    # (We use 60 seconds instead of 10 mins so we can test it quickly!)
+    release_unpaid_seat.apply_async(
+        args=[str(seat_to_reserve.id), str(event_id)], 
+        countdown=60
+    )
+
+
+
+async def confirm_payment(db: AsyncSession, seat_id: uuid.UUID, user_id: uuid.UUID, idempotency_key: str):
+    # 1. IDEMPOTENCY CHECK: Have we already processed this exact payment?
+    existing_booking = await db.execute(
+        select(Booking).where(Booking.idempotency_key == idempotency_key)
+    )
+    if existing_booking.scalars().first():
+        print("♻️ Idempotency catch! We already processed this payment. Ignoring duplicate.")
+        return {"status": "Already processed"}
+
+    # 2. Find the locked seat
+    seat_query = select(Seat).where(Seat.id == seat_id, Seat.locked_by_user_id == user_id)
+    result = await db.execute(seat_query)
+    seat = result.scalars().first()
+
+    if not seat or seat.status != SeatStatus.LOCKED:
+        raise HTTPException(status_code=400, detail="Seat lock expired or invalid user.")
+
+    # 3. Mark seat as officially BOOKED (Sold)
+    seat.status = SeatStatus.BOOKED
+    
+    # 4. Create the final Booking record (Ticket)
+    new_booking = Booking(
+        user_id=user_id,
+        event_id=seat.event_id,
+        seat_id=seat.id,
+        status=BookingStatus.CONFIRMED,
+        idempotency_key=idempotency_key
+    )
+    db.add(new_booking)
+    await db.commit()
+
+    return {"status": "Ticket Confirmed!"}
     
     return seat_to_reserve

@@ -7,12 +7,10 @@
 from celery import Celery
 from app.core.config import settings
 
-# Initialize Celery and tell it to use our Redis container
+# Initialize Celery and explicitly INCLUDE our tasks file
 celery_app = Celery(
     "ticket_tasks",
     broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL
+    backend=settings.REDIS_URL,
+    include=['app.tasks.seat_tasks']  # <-- This fixes the KeyError!
 )
-
-# Tell Celery where to find our tasks
-celery_app.autodiscover_tasks(['app.tasks'])

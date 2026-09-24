@@ -25,3 +25,8 @@ class SeatResponse(BaseModel):
     # SENIOR FLEX: This tells Pydantic to read data directly from the SQLAlchemy ORM model
     class Config:
         from_attributes = True
+
+class PaymentWebhookPayload(BaseModel):
+    seat_id: uuid.UUID
+    user_id: uuid.UUID
+    idempotency_key: str = Field(..., description="Unique ID from Stripe to prevent double-processing")
